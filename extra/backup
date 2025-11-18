@@ -1,0 +1,58 @@
+#!/bin/bash
+# ==========================================================
+# Cloudflare R2 Auto Backup Script (ZIP version)
+# Mukesh: Backup /var/www/ — each domain folder + full folder as server-backup.zip
+# ==========================================================
+
+# Variables
+SOURCE_DIR="/var/www"
+BACKUP_DIR="/tmp/server-backup"
+BUCKET_NAME="server-backup"
+R2_ENDPOINT="https://0be5d4516fdefd9e863d3e84eab80c10.r2.cloudflarestorage.com"
+
+# Create temp dir
+mkdir -p "$BACKUP_DIR"
+
+echo "🌀 Starting ZIP backup at $(date)"
+
+# ----------------------------------------------------------
+# 1️⃣ Backup each domain folder separately
+# ----------------------------------------------------------
+
+for folder in "$SOURCE_DIR"/*; do
+    if [ -d "$folder" ]; then
+        DOMAIN_NAME=$(basename "$folder")         # e.g., domain.com
+        BACKUP_FILE="${DOMAIN_NAME}.zip"          # ✅ e.g., domain.com.zip
+
+        echo "📦 Creating ZIP for domain: $DOMAIN_NAME ..."
+        cd "$SOURCE_DIR" || exit
+        zip -r -q "$BACKUP_DIR/$BACKUP_FILE" "$DOMAIN_NAME"
+
+        echo "☁️ Uploading $BACKUP_FILE to Cloudflare R2..."
+        aws s3 cp "$BACKUP_DIR/$BACKUP_FILE" s3://"$BUCKET_NAME"/ \
+            --endpoint-url "$R2_ENDPOINT" \
+            --only-show-errors
+    fi
+done
+
+# ----------------------------------------------------------
+# 2️⃣ Full /var/www backup as server-backup.zip
+# ----------------------------------------------------------
+
+FULL_BACKUP_FILE="server-backup.zip"
+
+echo "🗃️ Creating full /var/www ZIP (server-backup.zip)..."
+cd "$SOURCE_DIR" || exit
+zip -r -q "$BACKUP_DIR/$FULL_BACKUP_FILE" .
+
+echo "☁️ Uploading $FULL_BACKUP_FILE to Cloudflare R2..."
+aws s3 cp "$BACKUP_DIR/$FULL_BACKUP_FILE" s3://"$BUCKET_NAME"/ \
+    --endpoint-url "$R2_ENDPOINT" \
+    --only-show-errors
+
+# ----------------------------------------------------------
+# Cleanup
+# ----------------------------------------------------------
+rm -rf "$BACKUP_DIR"
+
+echo "✅ All ZIP backups uploaded successfully at $(date)"

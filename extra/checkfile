@@ -1,0 +1,127 @@
+#!/bin/bash
+
+MASTER_DIR="/var/www/"
+TARGET_FILE="/etc/lsyncd/targets.conf"
+
+MASTER_FILES=$(find $MASTER_DIR -type f | wc -l)
+MASTER_DIRS=$(find $MASTER_DIR -type d | wc -l)
+
+echo "================================================="
+echo "  PARALLEL ZERO-LOAD + DEEP VERIFY FILE CHECK"
+echo "================================================="
+echo "Master Files : $MASTER_FILES"
+echo "Master Dirs  : $MASTER_DIRS"
+echo ""
+
+SSH_CMD="ssh -o ConnectTimeout=3 -o BatchMode=yes -o StrictHostKeyChecking=no"
+
+TMPDIR=$(mktemp -d)
+mapfile -t SERVERS < "$TARGET_FILE"
+
+
+for SERVER in "${SERVERS[@]}"; do
+(
+    SERVER=$(echo "$SERVER" | xargs)
+    OUTFILE="$TMPDIR/$SERVER.out"
+    [[ -z "$SERVER" ]] && exit 0
+
+    # hostname from GCP metadata
+    HOSTNAME=$(
+        $SSH_CMD root@$SERVER '
+            curl -s -H "Metadata-Flavor: Google" \
+            http://169.254.169.254/computeMetadata/v1/instance/name
+        ' 2>/dev/null
+    )
+    [[ -z "$HOSTNAME" ]] && HOSTNAME="UNKNOWN"
+
+
+    {
+        echo "➡ Checking $HOSTNAME ($SERVER) ..."
+
+        CHILD_FILES=$($SSH_CMD root@$SERVER 'find /var/www/ -type f | wc -l' 2>/dev/null)
+        CHILD_DIRS=$($SSH_CMD root@$SERVER 'find /var/www/ -type d | wc -l' 2>/dev/null)
+
+        [[ -z "$CHILD_FILES" ]] && {
+            echo "   ❌ SSH FAILED or SERVER UNREACHABLE"
+            exit 0
+        }
+
+        echo "   Files: $CHILD_FILES | Dirs: $CHILD_DIRS"
+
+        if [[ "$MASTER_FILES" -eq "$CHILD_FILES" && "$MASTER_DIRS" -eq "$CHILD_DIRS" ]]; then
+            echo "   ✅ COUNT MATCH"
+        else
+            echo "   ❌ COUNT MISMATCH"
+        fi
+
+        echo ""
+        echo "   🔍 ZERO-LOAD MISMATCH SCAN..."
+
+        # Step-1 → lightweight mismatch (size/mtime based)
+        LIGHT_MISMATCH=$(
+            rsync -avnc --delete \
+            --out-format="%n" \
+            root@$SERVER:/var/www/ /var/www/ 2>/dev/null \
+            | grep -v "/$" \
+            | grep -v "^.$" \
+            | grep -v "receiving incremental file list" \
+            | grep -v "^sent " \
+            | grep -v "^total size"
+        )
+
+        if [[ -z "$LIGHT_MISMATCH" ]]; then
+            echo "   ✅ NO FILE DIFFS FOUND"
+            exit 0
+        fi
+
+        echo "   ⚠ Found suspicious files:"
+        echo "$LIGHT_MISMATCH"
+        echo ""
+        echo "   🔍 Deep Content Verify (MD5 only on mismatched)..."
+
+        FINAL_MISMATCH=""
+
+        # Step-2 → Deep verify only mismatched files
+        while IFS= read -r FILE; do
+            [[ -z "$FILE" ]] && continue
+
+            FILE_PATH="/var/www/$FILE"
+
+            # master hash
+            MASTER_HASH=$(md5sum "$FILE_PATH" 2>/dev/null | awk '{print $1}')
+
+            # child hash
+            CHILD_HASH=$($SSH_CMD root@$SERVER "md5sum /var/www/$FILE 2>/dev/null" | awk '{print $1}')
+
+            if [[ "$MASTER_HASH" != "$CHILD_HASH" ]]; then
+                FINAL_MISMATCH+="$FILE"$'\n'
+            fi
+
+        done <<< "$LIGHT_MISMATCH"
+
+        if [[ -z "$FINAL_MISMATCH" ]]; then
+            echo "   ✅ ALL FILES IDENTICAL (even content)"
+        else
+            echo "   ❌ DATA MISMATCH (Content difference):"
+            echo "$FINAL_MISMATCH"
+        fi
+
+    } > "$OUTFILE"
+
+) &
+done
+
+wait
+
+echo ""
+echo "=================== RESULTS ==================="
+
+for SERVER in "${SERVERS[@]}"; do
+    SERVER=$(echo "$SERVER" | xargs)
+    OUTFILE="$TMPDIR/$SERVER.out"
+    [[ -f "$OUTFILE" ]] && cat "$OUTFILE" && echo ""
+done
+
+echo "=================== DONE ==================="
+
+rm -rf "$TMPDIR"

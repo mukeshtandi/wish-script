@@ -1,0 +1,352 @@
+head	1.12;
+access;
+symbols;
+locks
+	root:1.12; strict;
+comment	@# @;
+
+
+1.12
+date	2025.11.05.21.39.03;	author root;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	2025.11.05.21.34.57;	author root;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	2025.11.05.21.31.56;	author root;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	2025.11.05.21.29.47;	author root;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2025.11.05.21.28.30;	author root;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2025.11.05.21.27.44;	author root;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2025.11.05.21.05.48;	author root;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2025.11.05.21.05.39;	author root;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2025.11.05.21.00.12;	author root;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2025.11.05.20.49.53;	author root;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2025.11.05.20.43.12;	author root;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2025.11.05.20.28.00;	author root;	state Exp;
+branches;
+next	;
+
+
+desc
+@/usr/local/lsws/conf/vhosts/Example/vhconf.conf0
+@
+
+
+1.12
+log
+@Update
+@
+text
+@docRoot                   /var/www
+
+context / {
+    allowBrowse           1
+    accessControl {
+        allow             *
+    }
+}
+
+index {
+  useServer               1
+  indexFiles              status.php, index.php, index.html, index.htm, index.js
+  autoIndex               0
+}
+@
+
+
+1.11
+log
+@Update
+@
+text
+@a1 1
+indexFiles                status.php, index.php, index.html
+d8 6
+@
+
+
+1.10
+log
+@Update
+@
+text
+@d1 1
+a1 1
+docRoot                   /var/www/Example
+@
+
+
+1.9
+log
+@Update
+@
+text
+@d1 1
+a1 1
+docRoot                   /var/www
+@
+
+
+1.8
+log
+@Update
+@
+text
+@d1 1
+a1 1
+docRoot                   /var/www/Example
+@
+
+
+1.7
+log
+@Update
+@
+text
+@d1 1
+a1 1
+docRoot                   /usr/local/lsws/Example/html/
+@
+
+
+1.6
+log
+@Update
+@
+text
+@d1 2
+a2 32
+docRoot                   /var/www/Example
+
+errorlog /usr/local/lsws/conf/vhosts/Example/error.log {
+  logLevel                WARN
+  rollingSize             10M
+  keepDays                30
+}
+
+accesslog /usr/local/lsws/conf/vhosts/Example/access.log {
+  rollingSize             10M
+  keepDays                30
+  compressArchive         1
+}
+
+index {
+  useServer               1
+  indexFiles              index.php, index.html, index.htm, index.js
+  autoIndex               0
+}
+
+scripthandler {
+  add                     lsapi:lsphp php
+}
+
+phpIniOverride {
+  php_value memory_limit         512M
+  php_value upload_max_filesize  64M
+  php_value post_max_size        64M
+  php_value max_execution_time   120
+  php_value max_input_time       60
+  php_value max_input_vars       1000
+}
+d5 4
+a8 4
+  type                    NULL
+  location                $DOC_ROOT/
+  allowBrowse             0
+  indexFiles              index.php,index.html
+@
+
+
+1.5
+log
+@Update
+@
+text
+@d33 7
+@
+
+
+1.4
+log
+@Update
+@
+text
+@d32 1
+a32 1
+}@
+
+
+1.3
+log
+@Update
+@
+text
+@d1 1
+a1 5
+virtualHost Example {
+  vhRoot                  /var/www/
+  allowSymbolLink         1
+  enableScript            1
+  restrained              1
+d3 5
+a7 1
+  docRoot                 $VH_ROOT/Example
+d9 5
+a13 4
+  index  {
+    useServer             0
+    indexFiles            index.php,index.html
+  }
+d15 5
+a19 4
+  rewrite  {
+    enable                1
+    autoLoadHtaccess      1
+  }
+d21 3
+a23 4
+  errorlog Example {
+    useServer             1
+    logLevel              INFO
+  }
+d25 8
+a32 4
+  accesslog Example {
+    useServer             1
+  }
+}
+@
+
+
+1.2
+log
+@Update
+@
+text
+@d1 5
+a5 6
+virtualHost example_vh {
+vhRoot /var/www/
+configFile /usr/local/lsws/conf/vhosts/example_vh/vhconf.conf
+allowSymbolLink 1
+enableScript 1
+restrained 1
+d7 1
+a7 2
+documentRoot $VH_ROOT/Example
+enableGzip 1
+d9 4
+a12 4
+index {
+useServer 0
+indexFiles index.php,index.html
+}
+d14 4
+a17 4
+rewrite {
+enable 1
+autoLoadHtaccess 1
+}
+d19 4
+a22 4
+errorlog example_vh {
+useServer 1
+logLevel INFO
+}
+d24 3
+a26 3
+accesslog example_vh {
+useServer 1
+}
+@
+
+
+1.1
+log
+@Update
+@
+text
+@d1 6
+a6 3
+docRoot                   /var/www/Example
+vhDomain                  Example
+vhAliases                 www.Example
+d8 2
+a9 5
+errorlog /usr/local/lsws/conf/vhosts/Example/error.log {
+  logLevel                WARN
+  rollingSize             10M
+  keepDays                30
+}
+d11 3
+a13 4
+accesslog /usr/local/lsws/conf/vhosts/Example/access.log {
+  rollingSize             10M
+  keepDays                30
+  compressArchive         1
+d16 3
+a18 4
+index {
+  useServer               1
+  indexFiles              index.php, index.html, index.htm, index.js
+  autoIndex               0
+d21 3
+a23 2
+scripthandler {
+  add                     lsapi:lsphp php
+d26 2
+a27 7
+phpIniOverride {
+  php_value memory_limit         512M
+  php_value upload_max_filesize  64M
+  php_value post_max_size        64M
+  php_value max_execution_time   120
+  php_value max_input_time       60
+  php_value max_input_vars       1000
+a28 5
+
+expires {
+  enableExpires 1
+  expiresDefault          A604800
+  expiresByType           image/*=A604800, text/css=A604800, application/x-javascript=A604800, application/javascript=A604800, font/*=A604800, application/x-font-ttf=A604800
+@

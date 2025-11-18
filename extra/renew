@@ -1,0 +1,168 @@
+#!/bin/bash
+
+# 🛑 Graceful Ctrl+C exit
+safe_exit() {
+    if [[ $- == *i* ]]; then
+        return $1
+    else
+        exit $1
+    fi
+}
+
+trap "echo -e '\\n\\033[0;31m❌ Operation cancelled. Exiting...\\033[0m'; safe_exit 1" SIGINT
+
+ACME_DIR="/root/.acme.sh"
+DAYS_LIMIT=30
+GREEN="\\033[32m"
+RED="\\033[31m" 
+YELLOW="\\033[33m"
+CYAN="\\033[36m"
+BLUE="\\033[1;34m"
+ENDCOLOR="\\033[0m"
+
+# Optional recheck mode
+RECHECK_ONLY=false
+[[ "$1" == "--recheck" ]] && RECHECK_ONLY=true
+
+expired_domains=()
+domain_list=()
+DOMAIN=""
+
+echo -e "${CYAN}\\n🔍 Checking domains expiring in less than $DAYS_LIMIT days...${ENDCOLOR}"
+
+i=1
+for conf_file in "$ACME_DIR"/*_ecc/*.conf; do
+    [[ -e "$conf_file" ]] || continue
+    [[ "$conf_file" == *".csr.conf" ]] && continue
+    
+    domain=$(basename "$conf_file" .conf)
+    next_renew_epoch=$(grep "^Le_NextRenewTime='" "$conf_file" | cut -d"'" -f2)
+    
+    [[ -z "$next_renew_epoch" || ! "$next_renew_epoch" =~ ^[0-9]+$ ]] && continue
+    
+    now_epoch=$(date +%s)
+    days_left=$(( (next_renew_epoch - now_epoch) / 86400 ))
+    
+    if (( days_left < 0 )); then
+        echo -e "${RED}$i) $domain - ❌ Expired${ENDCOLOR}"
+        domain_list+=("$domain")
+        ((i++))
+    elif (( days_left <= DAYS_LIMIT )); then
+        echo -e "${YELLOW}$i) $domain - ⚠️ Expiring Soon (${days_left} days left)${ENDCOLOR}"
+        domain_list+=("$domain")
+        ((i++))
+    fi
+done
+
+if [ ${#domain_list[@]} -eq 0 ]; then
+    echo -e "${GREEN}✅ No domains expiring within $DAYS_LIMIT days.${ENDCOLOR}"
+    
+    if $RECHECK_ONLY; then
+        safe_exit 0
+    fi
+    
+    echo -e "\\n${CYAN}💡 What would you like to do next?${ENDCOLOR}"
+    echo "1) 🔁 Check again"
+    echo "2) 🛠️ Manually enter a domain to renew"
+    echo "3) 🚪 Exit"
+    
+    read -p "👉 Choose an option [1-3]: " fallback_choice
+    
+    case "$fallback_choice" in
+        1) exec "$0" --recheck ;;
+        2) read -p "✏️ Enter domain name: " DOMAIN ;;
+        3) echo -e "${YELLOW}👋 Exiting...${ENDCOLOR}"; safe_exit 0 ;;
+        *) echo -e "${RED}❌ Invalid choice. Exiting.${ENDCOLOR}"; safe_exit 1 ;;
+    esac
+else
+    while true; do
+        echo -ne "${CYAN}\\n🔢 Enter serial number to renew (1-${#domain_list[@]}): ${ENDCOLOR}"
+        read selected
+        
+        if [[ "$selected" =~ ^[0-9]+$ ]] && (( selected >= 1 && selected <= ${#domain_list[@]} )); then
+            DOMAIN="${domain_list[$((selected - 1))]}"
+            break
+        else
+            echo -e "${RED}❌ Invalid choice. Try again.${ENDCOLOR}"
+        fi
+    done
+fi
+
+# Check if DOMAIN is set
+if [[ -z "$DOMAIN" ]]; then
+    echo -e "${RED}❌ No domain selected. Exiting.${ENDCOLOR}"
+    safe_exit 1
+fi
+
+echo -e "${CYAN}\\n💡 Type '${GREEN}renew${ENDCOLOR}${CYAN}' to manually renew an expiring SSL certificate.${ENDCOLOR}"
+read -p "👉 Type here: " input
+
+if [[ "$input" != "renew" ]]; then
+    echo -e "${RED}❌ You didn't type 'renew'. Exiting.${ENDCOLOR}"
+    safe_exit 1
+fi
+
+echo -e "${GREEN}🔁 Starting manual DNS renewal for: $DOMAIN${ENDCOLOR}"
+
+    # Install acme.sh if needed
+    if ! command -v acme.sh &> /dev/null; then
+      curl https://get.acme.sh | sh
+      source ~/.bashrc
+    fi
+
+    # Set default CA (Let’s Encrypt)
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+
+    # DNS TXT Challenge Prompt
+    echo -e "${GREEN}🔧 Preparing DNS challenge (step 1)...${ENDCOLOR}"
+    ~/.acme.sh/acme.sh --issue --dns dns_manual --yes-I-know-dns-manual-mode-enough-go-ahead-please -d "$DOMAIN" -d "www.$DOMAIN" --ecc --debug > /tmp/ssl_renew_debug.log 2>&1
+    echo -e "\n📝 \033[1;34mPlease add the following TXT records in your DNS (Cloudflare):\033[0m"
+
+    awk '
+      /Domain:.*_acme-challenge/ {
+        domain=$0
+        getline
+        txt=$0
+        gsub(/.*Domain: /, "", domain)
+        gsub(/.*TXT value: /, "", txt)
+        printf "   🔸 Domain: \033[32m%s\033[0m\n", domain
+        printf "   🔸 TXT value: \033[32m%s\033[0m\n\n", txt
+      }
+    ' /tmp/ssl_renew_debug.log
+
+    while true; do
+      read -rp "✅ TXT records added? (y/n): " ok
+      if [[ "$ok" =~ ^[Yy]$ ]]; then break; fi
+      read -rp "❓ Abort SSL setup? (y/N): " abort
+      if [[ "$abort" =~ ^[Yy]$ ]]; then
+        echo -e "${RED}❌ SSL setup aborted.${ENDCOLOR}"
+        exit 1
+      fi
+    done
+
+    ~/.acme.sh/acme.sh --renew --force --ecc \
+      -d "$DOMAIN" -d "www.$DOMAIN" \
+      --yes-I-know-dns-manual-mode-enough-go-ahead-please \
+      || { echo -e "${RED}❌ Renewal failed.${ENDCOLOR}"; exit 1; }
+
+    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+      --key-file "$SSL_KEY" \
+      --fullchain-file "$SSL_CERT" \
+      --reloadcmd "/usr/local/lsws/bin/lswsctrl reload" \
+      || { echo -e "${RED}❌ Install failed.${ENDCOLOR}"; exit 1; }
+
+    echo -e "${GREEN}✅ Certificate installed for $DOMAIN and www.$DOMAIN${ENDCOLOR}"
+
+  rm -f /tmp/ssl_renew_debug.log
+
+# Step 4: Restart LiteSpeed
+echo -e "${CYAN}Step 5: Restarting LiteSpeed...${ENDCOLOR}"
+/usr/local/lsws/bin/lswsctrl reload
+
+if [[ $? -eq 0 ]]; then
+    echo -e "${GREEN}✅ SSL certificate renewed and installed successfully for $DOMAIN${ENDCOLOR}"
+else
+    echo -e "${YELLOW}⚠️ Certificate installed but LiteSpeed reload may have failed. Please check manually.${ENDCOLOR}"
+fi
+
+echo -e "${CYAN}🔍 You can verify the certificate at: https://$DOMAIN${ENDCOLOR}"

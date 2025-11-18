@@ -1,0 +1,480 @@
+#!/bin/bash
+
+# ─── Signal Trap ─────────────────────────────
+trap "echo -e '\n\e[31m❌ Operation cancelled. Exiting...\e[0m'; exit 1" SIGINT
+
+# ─── Colors ──────────────────────────────────
+GREEN="\e[32m"
+RED="\e[31m"
+YELLOW="\e[33m"
+BLUE="\e[34m"
+ENDCOLOR="\e[0m"
+
+# ─── Paths ───────────────────────────────────
+LSWS_CONF="/usr/local/lsws/conf/httpd_config.conf"
+DOCROOT_BASE="/var/www"
+VHOST_CONF_BASE="/usr/local/lsws/conf/vhosts"
+SSL_PATH="/etc/ssl/example-certs"
+ACME=~/.acme.sh/acme.sh
+
+
+# ─── Helper Functions ────────────────────────
+read_safe() {
+  local prompt="$1" varname="$2" input=""
+  while true; do
+    read -e -p "$prompt" input
+    if [[ -n "$input" ]]; then
+      printf -v "$varname" "%s" "$input"
+      break
+    fi
+    echo -e "${RED}❌ Please enter a valid input.${ENDCOLOR}"
+  done
+}
+
+validate_domain() {
+  local d="$1"
+  if ! [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z]{2,})+$ ]]; then
+    echo -e "${RED}❌ Invalid domain: $d${ENDCOLOR}"
+    return 1
+  fi
+  return 0
+}
+
+remove_if_empty_listener() {
+  local L="$1"
+  if grep -q "listener $L" "$LSWS_CONF"; then
+    local cnt
+    cnt=$(awk -v l="$L" '
+      BEGIN { in_l = 0; cnt = 0 }
+      # Enter listener block
+      $0 ~ "^[[:space:]]*listener[[:space:]]+" l "[[:space:]]*\\{" {
+        in_l = 1; next
+      }
+      # Count map lines inside block
+      in_l && $0 ~ "^[[:space:]]*map[[:space:]]+" {
+        cnt++; next
+      }
+      # Exit listener block
+      in_l && $0 ~ "^[[:space:]]*\\}" {
+        in_l = 0; next
+      }
+      END { print cnt }
+    ' "$LSWS_CONF")
+    
+    if [[ "$cnt" -eq 0 ]]; then
+      echo -e "${YELLOW}⚠️  $L has no mappings. Removing...${ENDCOLOR}"
+      awk -v l="$L" '
+        BEGIN { in_l = 0 }
+        # Enter listener block
+        $0 ~ "^[[:space:]]*listener[[:space:]]+" l "[[:space:]]*\\{" {
+          in_l = 1; next
+        }
+        # Exit listener block (and skip it)
+        in_l && $0 ~ "^[[:space:]]*\\}" {
+          in_l = 0; next
+        }
+        # Print lines only when not inside listener
+        !in_l { print }
+      ' "$LSWS_CONF" > "${LSWS_CONF}.tmp" && mv "${LSWS_CONF}.tmp" "$LSWS_CONF"
+    fi
+  fi
+}
+
+safe_restart_lsws() {
+  echo -e "${BLUE}🔁 Reloading LiteSpeed...${ENDCOLOR}"
+  if /usr/local/lsws/bin/lswsctrl reload; then
+    echo -e "${GREEN}✅ LiteSpeed reloaded.${ENDCOLOR}"
+  else
+    echo -e "${RED}❌ Reload failed. Check logs.${ENDCOLOR}"
+    exit 1
+  fi
+}
+
+# ─── Main Menu ───────────────────────────────
+echo -e "\n🎛️  LiteSpeed Domain Manager"
+echo "  v  → Add domain (HTTP)"
+echo "  vs → Add domain (HTTPS via Let's Encrypt)"
+echo "  d  → Delete domain"
+read_safe "👉 Choice (v/vs/d): " ACTION
+if [[ ! "$ACTION" =~ ^(v|vs|d)$ ]]; then
+  echo -e "${RED}❌ Invalid choice.${ENDCOLOR}" && exit 1
+fi
+
+# ─── Delete Mode ─────────────────────────────
+if [[ "$ACTION" == "d" ]]; then
+  echo -e "\n🧠 Existing domains:"
+  grep -oP 'virtualHost \K[^ ]+' "$LSWS_CONF" || echo "(none)"
+  read_safe "👉 Domain to delete: " DOMAIN
+  validate_domain "$DOMAIN" || exit 1
+  if ! grep -q "virtualHost $DOMAIN" "$LSWS_CONF"; then
+    echo -e "${RED}❌ '$DOMAIN' not found.${ENDCOLOR}" && exit 1
+  fi
+  echo -e "\n⚠️  This will remove config, vhost, mappings for ${RED}$DOMAIN${ENDCOLOR}"
+  read -rp "❓ Continue? (y/N): " CONF
+  [[ ! "$CONF" =~ ^[Yy]$ ]] && echo -e "${YELLOW}Cancelled.${ENDCOLOR}" && exit 0
+
+# Remove virtualHost block
+awk -v d="$DOMAIN" '
+  BEGIN { in_vh=0 }
+  $0 ~ "^virtualHost " d " *\\{" { in_vh=1; next }
+  in_vh && $0 ~ "^\\}" { in_vh=0; next }
+  !in_vh { print }
+' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+
+# Remove virtualHost block
+awk -v d="$DOMAIN" '
+  BEGIN { in_vh=0 }
+  $0 ~ "^virtualHost " d " *\\{" { in_vh=1; next }
+  in_vh && $0 ~ "^\\}"               { in_vh=0; next }
+  !in_vh                            { print }
+' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+
+# Remove mappings from HTTP_80 and HTTPS_443
+for L in HTTP_80 HTTPS_443; do
+  awk -v d="$DOMAIN" -v l="$L" '
+    BEGIN { inl=0 }
+    # Enter listener block
+    $0 ~ "^[[:space:]]*listener[[:space:]]+" l "[[:space:]]*\\{" {
+      inl=1; print; next
+    }
+    # Exit listener block
+    inl && $0 ~ "^[[:space:]]*\\}" {
+      inl=0; print; next
+    }
+    # Skip map lines matching domain
+    inl && $0 ~ "^[[:space:]]*map[[:space:]]+" d "[[:space:]]+" d "$" {
+      next
+    }
+    # Default
+    { print }
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+done
+  # Remove vhost dir
+  rm -rf "$VHOST_CONF_BASE/$DOMAIN"
+  # Clean empty listeners & reload
+  remove_if_empty_listener HTTP_80
+  remove_if_empty_listener HTTPS_443
+  safe_restart_lsws
+  # Final status summary
+  echo -e "${GREEN}✅ Domain deleted: $DOMAIN${ENDCOLOR}\n"
+
+  echo -e "🧹 Removed:"
+  [[ ! -d "$VHOST_CONF_BASE/$DOMAIN" ]] && echo -e "  🔸 Virtual Host config directory: $VHOST_CONF_BASE/$DOMAIN"
+  ! grep -q "virtualHost $DOMAIN" "$LSWS_CONF" && echo -e "  🔸 virtualHost block removed from httpd_config.conf"
+  ! grep -q "map $DOMAIN $DOMAIN" "$LSWS_CONF" && echo -e "  🔸 Domain map entries removed from HTTP/HTTPS listeners"
+
+  echo -e "\n🔐 Preserved:"
+  [ -d "$SSL_BASE/$DOMAIN" ] && echo -e "  🗃️  SSL certificate files still exist: $SSL_BASE/$DOMAIN"
+  echo -e "  🗃️  Website files (public_html, database, etc) — not removed by this script"
+
+  echo -e "\n💡 Tip: If you no longer need SSL or site files, you can remove them manually."
+
+  echo -e "\n🔁 LiteSpeed Web Server configuration reloaded"
+  echo -e "🧹 Listeners with no mapped domains were removed automatically (if any)"
+  exit 0
+fi
+
+# ─── Add Modes ───────────────────────────────
+read_safe "👉 Domain name: " DOMAIN
+validate_domain "$DOMAIN" || exit 1
+
+DOCROOT="$DOCROOT_BASE/$DOMAIN"
+VCONF="$VHOST_CONF_BASE/$DOMAIN"
+SSL_DIR="$SSL_PATH/$DOMAIN"
+SSL_KEY="$SSL_DIR/privkey.pem"
+SSL_CERT="$SSL_DIR/fullchain.pem"
+
+mkdir -p "$DOCROOT" "$VCONF" "$SSL_DIR"
+chown -R nobody:nogroup "$DOCROOT" && chmod -R 755 "$DOCROOT"
+
+# Write basic vhconf
+cat > "$VCONF/vhconf.conf" <<EOF
+docRoot                   $DOCROOT
+vhDomain                  $DOMAIN
+vhAliases                 www.$DOMAIN
+
+index {
+  useServer               1
+  indexFiles              index.php, index.html, index.htm, index.js
+  autoIndex               0
+}
+
+errorlog $VCONF/error.log {
+  logLevel                WARN
+  rollingSize             10M
+  keepDays                30
+}
+
+accesslog $VCONF/access.log {
+  logFormat               '%{X-Forwarded-For}i %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"'
+  logHeaders              5
+  rollingSize             10M
+  keepDays                30
+  compressArchive         1
+}
+
+scripthandler {
+  add                     lsapi:lsphp php
+}
+
+phpIniOverride {
+  php_value memory_limit         512M
+  php_value upload_max_filesize  64M
+  php_value post_max_size        64M
+  php_value max_execution_time   120
+  php_value max_input_time       60
+  php_value max_input_vars       1000
+}
+
+expires {
+  enableExpires           1
+  expiresDefault          A604800
+  expiresByType           image/*=A604800, text/css=A604800, application/x-javascript=A604800, application/javascript=A604800, font/*=A604800, application/x-font-ttf=A604800
+}
+EOF
+
+# Add virtualHost block if missing
+grep -q "virtualHost $DOMAIN" "$LSWS_CONF" || cat >> "$LSWS_CONF" <<EOF
+
+virtualHost $DOMAIN {
+  vhRoot                  $VCONF
+  configFile              conf/vhosts/$DOMAIN/vhconf.conf
+  allowSymbolLink         1 # WordPress, Laravel, custom apps
+  enableScript            1
+  restrained              1 # website will only have access inside its own folder.
+}
+EOF
+
+# Ensure HTTP listener
+grep -q 'listener HTTP_80' "$LSWS_CONF" || cat >> "$LSWS_CONF" <<EOF
+
+listener HTTP_80 {
+  address                 *:80
+  secure                  0
+}
+EOF
+
+# Remove any existing HTTP and HTTPS mapping for domain
+for L in HTTP_80 HTTPS_443; do
+  awk -v d="$DOMAIN" -v l="$L" '
+    $0 ~ ("listener " l) { inl = 1; print; next }
+    inl && /map / && $0 ~ d { next }       # skip old map lines for this domain
+    inl && /^[[:space:]]*}/ { inl = 0 }    # close listener block
+    { print }
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+done
+
+if [[ "$ACTION" == "v" ]]; then
+  # Add HTTP mapping
+  awk -v d="$DOMAIN" '
+    $0~/listener HTTP_80/{inl=1;print;next}
+    inl&&/^[[:space:]]*}/{print "  map                     "d" "d; inl=0}
+    {print}
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+
+  safe_restart_lsws
+if [[ "$ACTION" == "v" ]]; then
+  echo -e "\n${GREEN}✅ $DOMAIN setup complete.${ENDCOLOR}"
+  echo -e "${GREEN}🌐 Visit: http://$DOMAIN${ENDCOLOR}"
+  echo -e "${YELLOW}⚠️  IMPORTANT: You have set up this domain without SSL (HTTP only).${ENDCOLOR}"
+  echo -e "${YELLOW}👉 If you are using Cloudflare, please go to the SSL/TLS settings and set SSL mode to: ${RED}Flexible${ENDCOLOR}"
+  echo -e "${YELLOW}🔗 https://dash.cloudflare.com ➝ Select your domain ➝ SSL/TLS ➝ Overview ➝ SSL mode ➝ Flexible${ENDCOLOR}"
+fi
+  exit 0
+fi
+
+# vs: HTTPS via Let's Encrypt
+# ─── vs: Add with SSL ─────────────────────────
+if [[ "$ACTION" == "vs" ]]; then
+
+  mkdir -p "$SSL_DIR"
+
+  if [[ -f "$SSL_KEY" && -f "$SSL_CERT" ]]; then
+    echo -e "${GREEN}🔒 SSL certificate already exists for $DOMAIN. Skipping issuance and installation.${ENDCOLOR}"
+  else
+    echo -e "${GREEN}🔐 Generating Let’s Encrypt certificate for $DOMAIN and www.$DOMAIN...${ENDCOLOR}"
+
+
+# Ask for Cloudflare account choice
+echo -e "\n${YELLOW}Select Cloudflare account for ${DOMAIN}:${ENDCOLOR}"
+echo "1) Surendra Cloudflare"
+echo "2) Mukesh Cloudflare"
+read -rp "👉 Enter choice [1-2]: " CF_CHOICE
+
+# Map account choice to tokens
+case "$CF_CHOICE" in
+  1)
+    export CF_Token="5xaJli4VUDdNmf7v_751hFOb9XQKgIELG6MI1oDO"
+    export CF_Account_ID="a24402ebbb199b590375464f3835f0d5"
+    ;;
+  2)
+    export CF_Token="ZuJbKgkkqvBTRJku7x5ECJPQVna2xkR8uIcWY37a"
+    export CF_Account_ID="0be5d4516fdefd9e863d3e84eab80c10"
+    ;;
+  *)
+    echo -e "${RED}❌ Invalid choice.${ENDCOLOR}"
+    exit 1
+    ;;
+esac
+
+# Issue SSL
+echo -e "${YELLOW}🔐 Issuing SSL for ${DOMAIN}...${ENDCOLOR}"
+$ACME --issue --force --dns dns_cf \
+      -d "$DOMAIN" \
+      -d "www.$DOMAIN" \
+      --ecc || {
+    echo -e "${RED}❌ SSL issue failed.${ENDCOLOR}"
+    exit 1
+}
+
+# Install SSL
+echo -e "${YELLOW}⚙ Installing certificate...${ENDCOLOR}"
+$ACME --install-cert \
+      -d "$DOMAIN" \
+      -d "www.$DOMAIN" \
+      --ecc \
+      --key-file "$SSL_KEY" \
+      --fullchain-file "$SSL_CERT" || {
+    echo -e "${RED}❌ Install failed.${ENDCOLOR}"
+    exit 1
+}
+
+if [ "$CF_CHOICE" = "1" ]; then
+    export CF_Token="5xaJli4VUDdNmf7v_751hFOb9XQKgIELG6MI1oDO"
+    export CF_Account_ID="a24402ebbb199b590375464f3835f0d5"
+elif [ "$CF_CHOICE" = "2" ]; then
+    export CF_Token="ZuJbKgkkqvBTRJku7x5ECJPQVna2xkR8uIcWY37a"
+    export CF_Account_ID="0be5d4516fdefd9e863d3e84eab80c10"
+fi
+
+# 💾 Force save Cloudflare credentials for future renewals
+echo -e "${YELLOW}💾 Saving Cloudflare credentials permanently for $DOMAIN...${ENDCOLOR}"
+
+# Step 1: Explicitly call acme.sh with environment injection
+CF_Token="$CF_Token" CF_Account_ID="$CF_Account_ID" \
+$ACME --renew --force -d "$DOMAIN" --ecc > /tmp/token_save_debug.log 2>&1
+
+# Step 2: Verify token saved
+if grep -q "SAVED_CF_Token" ~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.conf 2>/dev/null; then
+    echo -e "${GREEN}✅ Cloudflare credentials saved successfully for auto-renew.${ENDCOLOR}"
+else
+    echo -e "${RED}⚠ Token still not found in .conf — applying manual save...${ENDCOLOR}"
+    # Manual fallback: insert into .conf
+    CONF_FILE=~/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.conf
+    if [ -f "$CONF_FILE" ]; then
+        echo "SAVED_CF_Token='$CF_Token'" >> "$CONF_FILE"
+        echo "SAVED_CF_Account_ID='$CF_Account_ID'" >> "$CONF_FILE"
+        echo -e "${GREEN}✅ Tokens injected manually into .conf${ENDCOLOR}"
+    else
+        echo -e "${RED}❌ .conf file not found at $CONF_FILE${ENDCOLOR}"
+    fi
+fi
+echo -e "${GREEN}✅ SSL installed successfully for $DOMAIN (Let's Encrypt).${ENDCOLOR}"
+
+# Verify
+openssl x509 -in "$SSL_DIR/fullchain.pem" -noout -issuer -dates
+
+echo -e "\n${GREEN}All done! Auto-renew is handled by your daily cron.${ENDCOLOR}"
+
+  # Remove existing HTTP mapping
+  awk -v d="$DOMAIN" '
+  /^[[:space:]]*listener HTTP_80/ { inl=1; print; next }
+  inl && /^[[:space:]]*map[[:space:]]+/ && $0~d { next }
+  inl && /^[[:space:]]*}/ { inl=0 }
+  { print }
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+
+  # Remove existing HTTPS mapping
+  awk -v d="$DOMAIN" '
+  /^[[:space:]]*listener HTTPS_443/ { inl=1; print; next }
+  inl && /^[[:space:]]*map[[:space:]]+/ && $0~d { next }
+  inl && /^[[:space:]]*}/ { inl=0 }
+  { print }
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+
+  # Ensure HTTPS listener exists and add mapping
+  if ! grep -q 'listener HTTPS_443' "$LSWS_CONF"; then
+    cat >> "$LSWS_CONF" <<EOF
+listener HTTPS_443 {
+  address                 *:443
+  secure                  1
+
+  # TLS Key and Certificate
+  keyFile                 /usr/local/lsws/conf/cert/self.key
+  certFile                /usr/local/lsws/conf/cert/self.crt
+
+}
+EOF
+  fi
+
+  # Add map line
+  awk -v d="$DOMAIN" '
+  /^[[:space:]]*listener HTTPS_443/ {
+    inl=1; print; next
+  }
+  inl && /^[[:space:]]*}/ {
+    print "  # Domain Mapping"
+    print "  map                     " d " " d
+    inl=0
+  }
+  { print }
+  ' "$LSWS_CONF" > tmp && mv tmp "$LSWS_CONF"
+fi
+
+# Flags to check if vhssl or module cache section is missing
+missing_vhssl=0
+missing_module_cache=0
+
+# Check if 'vhssl' section exists by looking for 'vhssl {' at the beginning or after some spaces
+if ! grep -iq '^[[:space:]]*vhssl[[:space:]]*{' "$VCONF/vhconf.conf"; then
+  missing_vhssl=1
+fi
+
+# Check if 'module cache' section exists by looking for 'module cache {' at the beginning or after some spaces
+if ! grep -iq '^[[:space:]]*module[[:space:]]*cache[[:space:]]*{' "$VCONF/vhconf.conf"; then
+  missing_module_cache=1
+fi
+
+# If either section is missing, append the required configuration
+if (( missing_vhssl || missing_module_cache )); then
+  echo "Appending missing vhssl or module cache configuration to vhconf.conf..."
+
+  # Append the vhssl and module cache sections to the file
+  cat >> "$VCONF/vhconf.conf" <<EOF
+
+vhssl  {
+  keyFile                 $SSL_KEY
+  certFile                $SSL_CERT
+  certChain               1
+  ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH:ECDHE-RSA-AES128-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA128:DHE-RSA-AES128-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-GCM-SHA128:ECDHE-RSA-AES128-SHA384:ECDHE-RSA-AES128-SHA128:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES128-SHA:DHE-RSA-AES128-SHA128:DHE-RSA-AES128-SHA128:DHE-RSA-AES128-SHA:DHE-RSA-AES128-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES128-GCM-SHA384:AES128-GCM-SHA128:AES128-SHA128:AES128-SHA128:AES128-SHA:AES128-SHA:DES-CBC3-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!MD5:!PSK:!RC4
+  enableECDHE             1
+  DHParam                 /usr/local/lsws/conf/dhparam.pem
+  sslProtocol             24
+  renegProtection         1
+  sslSessionCache         1
+  sslSessionTickets       1
+  enableSpdy              15
+  enableQuic              1
+  enableStapling          1
+  ocspRespMaxAge          86400
+  ocspCACerts             /root/.acme.sh/${DOMAIN}_ecc/ca.cer
+}
+
+module cache {
+  ls_enabled              1
+}
+EOF
+fi
+
+  safe_restart_lsws
+# ─── Final Completion Message ─────────────────
+if [[ "$ACTION" == "vs" ]]; then
+  echo -e "\n${GREEN}✅ $DOMAIN setup complete with SSL.${ENDCOLOR}"
+  echo -e "${GREEN}🔒 Visit: https://$DOMAIN${ENDCOLOR}"
+  echo -e "${BLUE}🔐 You are using a valid SSL certificate for this domain.${ENDCOLOR}"
+  echo -e "${BLUE}👉 To ensure end-to-end encryption, go to Cloudflare SSL settings and set SSL mode to: ${GREEN}Full (Strict)${ENDCOLOR}"
+  echo -e "${BLUE}🔗 https://dash.cloudflare.com ➝ Select your domain ➝ SSL/TLS ➝ Overview ➝ SSL mode ➝ Full (Strict)${ENDCOLOR}"
+fi
+  exit 0
+fi
+exit 1

@@ -1,0 +1,15 @@
+docroot /var/www
+
+context / {
+    allowbrowse 1
+
+    accesscontrol  {
+        allow *
+    }
+}
+
+index  {
+    useserver 0
+    indexfiles status.php, index.php, index.html, index.htm, index.js
+    autoindex 0
+}
