@@ -165,6 +165,8 @@ fi
 
 echo -e "${GREEN}[+] Setup Wordpress installer ${ENDCOLOR}"
 apt install -y mariadb-server mariadb-client
+apt install -y php-mysql
+
 # Auto MySQL Secure Installation Script
 # Author: Mukesh’s helper 😉
 # Works for MariaDB / MySQL
@@ -192,6 +194,14 @@ DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 EOF
 
+sudo mysql -e "
+CREATE DATABASE sql_create_wish_;
+CREATE USER 'suru'@'localhost' IDENTIFIED BY 'Mukesh@123';
+CREATE USER 'suru'@'%' IDENTIFIED BY 'Mukesh@123';
+GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'localhost';
+GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'%';
+FLUSH PRIVILEGES;
+"
 echo -e "${GREEN}[+] ✅ MySQL/MariaDB has been secured successfully!${ENDCOLOR}"
 
 echo -e "${GREEN}🎉 Setup Complete. Start OpenLiteSpeed with: systemctl start lsws${ENDCOLOR}"
