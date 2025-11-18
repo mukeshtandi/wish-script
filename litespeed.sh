@@ -226,10 +226,6 @@ for DIR in "${REQUIRED_DIRS[@]}"; do
 done
 chown -R nobody:nogroup /var/www/
 
-
-# ⏰ Set server timezone to Asia/Kolkata (India Standard Time)
-sudo timedatectl set-timezone Asia/Kolkata
-
 }
 
 # ==================================================================================== #
