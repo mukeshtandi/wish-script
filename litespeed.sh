@@ -194,16 +194,32 @@ DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 EOF
 
+# -----------------------------------------
+#  CREATE DB + USER ONLY IF NOT EXISTS
+# -----------------------------------------
 sudo mariadb -e "
-CREATE DATABASE sql_create_wish_;
-CREATE USER 'suru'@'localhost' IDENTIFIED BY 'Mukesh@123';
-CREATE USER 'suru'@'%' IDENTIFIED BY 'Mukesh@123';
+-- Create DB (skip if exists)
+CREATE DATABASE IF NOT EXISTS sql_create_wish_;
+
+-- Create users (skip if exists)
+CREATE USER IF NOT EXISTS 'suru'@'localhost' IDENTIFIED BY 'Mukesh@123';
+CREATE USER IF NOT EXISTS 'suru'@'%' IDENTIFIED BY 'Mukesh@123';
+
+-- Grant privileges
 GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'localhost';
 GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'%';
 FLUSH PRIVILEGES;
 "
 
-sudo mariadb -u suru -p'Mukesh@123' sql_create_wish_ < /root/wish-script/files/sql_create_wish_.sql
+# Import SQL only if database is empty
+RECORDS=$(sudo mariadb -N -s -u suru -p'Mukesh@123' -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='sql_create_wish_';")
+
+if [ "$RECORDS" -eq 0 ]; then
+    echo "[+] Importing SQL file..."
+    sudo mariadb -u suru -p'MMukesh@123' sql_create_wish_ < /root/wish-script/files/sql_create_wish_.sql
+else
+    echo "[+] SQL Import Skipped (Database already has tables)"
+fi
 
 echo -e "${GREEN}[+] ✅ MySQL/MariaDB has been secured successfully!${ENDCOLOR}"
 
