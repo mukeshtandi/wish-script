@@ -231,6 +231,11 @@ expires {
   expiresDefault          A604800
   expiresByType           image/*=A604800, text/css=A604800, application/x-javascript=A604800, application/javascript=A604800, font/*=A604800, application/x-font-ttf=A604800
 }
+
+rewrite  {
+  enable                  1
+  autoLoadHtaccess        1
+}
 EOF
 
 # Add virtualHost block if missing
