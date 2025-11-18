@@ -175,7 +175,7 @@ MYSQL_PASS="%Temp%10"
 
 echo -e "${GREEN}[+] 🔒 Running automatic MariaDB secure installation...${ENDCOLOR}"
 
-sudo mysql -u root -p"$MYSQL_PASS" <<EOF
+sudo mariadb -u root -p"$MYSQL_PASS" <<EOF
 -- Switch to unix_socket authentication
 ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
 FLUSH PRIVILEGES;
@@ -194,7 +194,7 @@ DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 EOF
 
-sudo mysql -e "
+sudo mariadb -e "
 CREATE DATABASE sql_create_wish_;
 CREATE USER 'suru'@'localhost' IDENTIFIED BY 'Mukesh@123';
 CREATE USER 'suru'@'%' IDENTIFIED BY 'Mukesh@123';
@@ -202,6 +202,9 @@ GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'localhost';
 GRANT ALL PRIVILEGES ON sql_create_wish_.* TO 'suru'@'%';
 FLUSH PRIVILEGES;
 "
+
+sudo mariadb -u suru -p'Mukesh@123' sql_create_wish_ < /root/wish-script/files/sql_create_wish_.sql
+
 echo -e "${GREEN}[+] ✅ MySQL/MariaDB has been secured successfully!${ENDCOLOR}"
 
 echo -e "${GREEN}🎉 Setup Complete. Start OpenLiteSpeed with: systemctl start lsws${ENDCOLOR}"
